@@ -25,18 +25,15 @@
         </header>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <!-- Camera Feed Section -->
             <div class="md:col-span-2 space-y-4">
                 <div class="relative rounded-xl overflow-hidden bg-black aspect-video shadow-2xl border border-slate-700">
                     <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
                     <canvas id="canvas" class="hidden"></canvas>
                     
-                    <!-- Lane Overlay -->
                     <div id="laneFrame" class="lane-overlay absolute inset-0 m-12 md:m-20 flex items-center justify-center">
                         <span class="text-amber-400 font-bold opacity-50 uppercase tracking-widest text-sm">Detection Lane</span>
                     </div>
 
-                    <!-- AI Processing Indicator -->
                     <div id="loadingIndicator" class="absolute inset-0 bg-black/60 hidden flex-col items-center justify-center">
                         <div class="animate-spin rounded-full h-12 w-12 border-4 border-amber-500 border-t-transparent"></div>
                         <p class="mt-4 text-amber-500 font-medium">Analyzing Frame...</p>
@@ -49,7 +46,6 @@
                 </div>
             </div>
 
-            <!-- Stats & Feedback -->
             <div class="space-y-6">
                 <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
                     <h2 class="text-slate-400 uppercase text-xs font-bold tracking-widest mb-4">Live Statistics</h2>
@@ -73,17 +69,17 @@
                 </div>
 
                 <div class="bg-slate-800/50 p-4 rounded-xl text-sm text-slate-400 italic">
-                    Note: Objects are counted only if they are fully contained within the yellow dashed frame. Partial inclusions are subtracted from the total potential count.
+                    Note: Objects are counted only if they are fully contained within the yellow dashed frame.
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Hidden audio for feedback -->
     <audio id="beepSound" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
 
     <script type="module">
-        const apiKey = ""; // Runtime provides this
+        // Replace with your actual Gemini API Key
+        const apiKey = "YOUR_ACTUAL_API_KEY"; 
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
         const startBtn = document.getElementById('startBtn');
@@ -93,9 +89,6 @@
         const loadingIndicator = document.getElementById('loadingIndicator');
         const laneFrame = document.getElementById('laneFrame');
 
-        let currentCount = 0;
-
-        // Initialize Camera
         async function startCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -124,11 +117,10 @@
             ctx.drawImage(video, 0, 0);
             const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
 
-            // Get Lane Rect Coordinates relative to video resolution
+            // Calculate Normalized Coordinates
             const videoRect = video.getBoundingClientRect();
             const frameRect = laneFrame.getBoundingClientRect();
             
-            // Normalized coordinates for the prompt (0-1000 scale is standard for vision prompts)
             const laneBox = {
                 ymin: Math.round(((frameRect.top - videoRect.top) / videoRect.height) * 1000),
                 xmin: Math.round(((frameRect.left - videoRect.left) / videoRect.width) * 1000),
@@ -136,18 +128,14 @@
                 xmax: Math.round(((frameRect.right - videoRect.left) / videoRect.width) * 1000)
             };
 
-            const prompt = `Analyze this image for toy cars.
-            The detection lane is defined by these normalized coordinates: [ymin: ${laneBox.ymin}, xmin: ${laneBox.xmin}, ymax: ${laneBox.ymax}, xmax: ${laneBox.xmax}].
-            
-            Find all toy cars. For each car, determine if its bounding box is COMPLETELY inside the lane.
-            Return a JSON object with:
-            1. "total_found": total number of toy cars in the whole image.
-            2. "inside_lane": number of toy cars fully contained within the lane boundaries.
-            3. "partial_or_outside": number of toy cars either outside or only partially inside.
-            4. "final_count": The "inside_lane" count. Ensure this never goes below 0.`;
+            const prompt = `Identify all toy cars in this image. 
+            The lane boundaries are: ymin: ${laneBox.ymin}, xmin: ${laneBox.xmin}, ymax: ${laneBox.ymax}, xmax: ${laneBox.xmax}.
+            Only count a car as "inside_lane" if its entire physical body is within those coordinates.
+            Return JSON: {"total_found": number, "inside_lane": number, "partial_or_outside": number, "final_count": number}`;
 
             try {
-                const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                // Corrected model: gemini-2.0-flash
+                const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -159,57 +147,51 @@
                             ]
                         }],
                         generationConfig: {
-                            responseMimeType: "application/json",
-                            responseSchema: {
-                                type: "OBJECT",
-                                properties: {
-                                    total_found: { type: "NUMBER" },
-                                    inside_lane: { type: "NUMBER" },
-                                    partial_or_outside: { type: "NUMBER" },
-                                    final_count: { type: "NUMBER" }
-                                }
-                            }
+                            responseMimeType: "application/json"
                         }
                     })
                 });
 
                 const result = await response.json();
-                const data = JSON.parse(result.candidates[0].content.parts[0].text);
                 
-                updateDisplay(data);
+                if (result.candidates && result.candidates[0].content.parts[0].text) {
+                    const data = JSON.parse(result.candidates[0].content.parts[0].text);
+                    updateDisplay(data);
+                }
             } catch (err) {
                 console.error("Detection Error:", err);
-                statusText.innerText = "Connection Error";
+                statusText.innerText = "Analysis Failed";
+                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-red-900/50 text-red-400";
             } finally {
                 loadingIndicator.style.display = 'none';
             }
         }
 
         function updateDisplay(data) {
-            const count = Math.max(0, data.final_count);
+            const count = Math.max(0, data.inside_lane || 0);
             carCountEl.innerText = count;
             
             if (data.partial_or_outside > 0) {
-                statusText.innerText = `${data.partial_or_outside} car(s) excluded (outside lane)`;
+                statusText.innerText = `${data.partial_or_outside} car(s) outside lane`;
                 statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-amber-900/50 text-amber-400";
             } else if (count > 0) {
-                statusText.innerText = "Cars detected in lane";
+                statusText.innerText = "Lane Clear (Cars Detected)";
                 statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-emerald-900/50 text-emerald-400";
                 document.getElementById('beepSound').play().catch(() => {});
             } else {
-                statusText.innerText = "Lane Clear";
+                statusText.innerText = "Lane Empty";
                 statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300";
             }
         }
 
-        async function fetchWithRetry(url, options, retries = 5, backoff = 1000) {
+        async function fetchWithRetry(url, options, retries = 3, backoff = 1500) {
             try {
                 const res = await fetch(url, options);
-                if (!res.ok && retries > 0) throw new Error(res.statusText);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 return res;
             } catch (err) {
                 if (retries <= 0) throw err;
-                await new Promise(resolve => setTimeout(resolve, backoff));
+                await new Promise(r => setTimeout(r, backoff));
                 return fetchWithRetry(url, options, retries - 1, backoff * 2);
             }
         }
