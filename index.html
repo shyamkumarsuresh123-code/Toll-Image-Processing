@@ -1,349 +1,221 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Car, Camera, RefreshCw, AlertCircle, Info, Layout } from 'lucide-react';
-
-const App = () => {
-  // Refs
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const modelRef = useRef(null);
-  const requestRef = useRef(null);
-
-  // State
-  const [isModelLoading, setIsModelLoading] = useState(true);
-  const [isCameraReady, setIsCameraReady] = useState(false);
-  const [error, setError] = useState(null);
-  const [carCount, setCarCount] = useState(0);
-  const [laneFrame, setLaneFrame] = useState({ x: 0.2, y: 0.3, width: 0.6, height: 0.4 }); // Normalized 0-1
-
-  // Load External Scripts (TensorFlow.js and COCO-SSD)
-  const loadScripts = () => {
-    return new Promise((resolve, reject) => {
-      if (window.cocoSsd) {
-        resolve();
-        return;
-      }
-
-      const tfScript = document.createElement('script');
-      tfScript.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs';
-      tfScript.async = true;
-
-      tfScript.onload = () => {
-        const modelScript = document.createElement('script');
-        modelScript.src = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd';
-        modelScript.async = true;
-        modelScript.onload = resolve;
-        modelScript.onerror = () => reject(new Error('Failed to load COCO-SSD script'));
-        document.head.appendChild(modelScript);
-      };
-
-      tfScript.onerror = () => reject(new Error('Failed to load TensorFlow script'));
-      document.head.appendChild(tfScript);
-    });
-  };
-
-  // Initialize AI Model
-  const initModel = async () => {
-    try {
-      setIsModelLoading(true);
-      await loadScripts();
-      
-      // Initialize model using global window object from script tags
-      const model = await window.cocoSsd.load({
-        base: 'lite_mobilenet_v2'
-      });
-      modelRef.current = model;
-      setIsModelLoading(false);
-    } catch (err) {
-      setError("Failed to load detection model. Please ensure you have an active internet connection.");
-      setIsModelLoading(false);
-    }
-  };
-
-  // Setup Webcam
-  const setupCamera = async () => {
-    try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: 640, height: 480 },
-          audio: false,
-        });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
-            setIsCameraReady(true);
-          };
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toy Car Lane Detector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .lane-overlay {
+            border: 4px dashed #fbbf24;
+            background-color: rgba(251, 191, 36, 0.1);
+            pointer-events: none;
         }
-      }
-    } catch (err) {
-      setError("Camera access denied or unavailable. Please check your browser permissions.");
-    }
-  };
+        .status-pill {
+            transition: all 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen font-sans">
 
-  // Logic to determine if car is fully inside the lane frame
-  const checkInsideLane = (bbox, videoWidth, videoHeight) => {
-    const [x, y, width, height] = bbox;
-    
-    // Convert normalized lane frame to pixel coordinates
-    const lx = laneFrame.x * videoWidth;
-    const ly = laneFrame.y * videoHeight;
-    const lw = laneFrame.width * videoWidth;
-    const lh = laneFrame.height * videoHeight;
+    <div class="max-w-4xl mx-auto p-4 md:p-8">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-amber-400 mb-2">Toy Car Lane Monitor</h1>
+            <p class="text-slate-400">Detecting cars within the designated lane area</p>
+        </header>
 
-    // A car is fully inside if its bounding box is entirely within the lane box boundaries
-    const isInside = (
-      x >= lx &&
-      y >= ly &&
-      (x + width) <= (lx + lw) &&
-      (y + height) <= (ly + lh)
-    );
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Camera Feed Section -->
+            <div class="md:col-span-2 space-y-4">
+                <div class="relative rounded-xl overflow-hidden bg-black aspect-video shadow-2xl border border-slate-700">
+                    <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
+                    <canvas id="canvas" class="hidden"></canvas>
+                    
+                    <!-- Lane Overlay -->
+                    <div id="laneFrame" class="lane-overlay absolute inset-0 m-12 md:m-20 flex items-center justify-center">
+                        <span class="text-amber-400 font-bold opacity-50 uppercase tracking-widest text-sm">Detection Lane</span>
+                    </div>
 
-    return isInside;
-  };
-
-  const detect = useCallback(async () => {
-    if (
-      modelRef.current && 
-      videoRef.current && 
-      videoRef.current.readyState === 4
-    ) {
-      const video = videoRef.current;
-      const { videoWidth, videoHeight } = video;
-
-      // Detect objects
-      const predictions = await modelRef.current.detect(video);
-      
-      // Filter for vehicle types (representing toy cars)
-      const validTargets = ['car', 'truck', 'bus', 'motorcycle'];
-      const currentDetections = predictions.filter(p => validTargets.includes(p.class) && p.score > 0.5);
-
-      // Counting logic: only count cars fully inside the designated frame
-      const carsInside = currentDetections.filter(car => 
-        checkInsideLane(car.bbox, videoWidth, videoHeight)
-      ).length;
-
-      // Update state (enforces non-negative automatically by logic)
-      setCarCount(carsInside);
-
-      // Draw visualization
-      if (canvasRef.current) {
-        const ctx = canvasRef.current.getContext('2d');
-        canvasRef.current.width = videoWidth;
-        canvasRef.current.height = videoHeight;
-        ctx.clearRect(0, 0, videoWidth, videoHeight);
-
-        // 1. Draw Lane Frame (The "Target" Zone)
-        const lx = laneFrame.x * videoWidth;
-        const ly = laneFrame.y * videoHeight;
-        const lw = laneFrame.width * videoWidth;
-        const lh = laneFrame.height * videoHeight;
-
-        ctx.strokeStyle = '#3b82f6'; // Blue for the lane
-        ctx.lineWidth = 4;
-        ctx.setLineDash([15, 8]);
-        ctx.strokeRect(lx, ly, lw, lh);
-        
-        // Label the lane
-        ctx.fillStyle = '#3b82f6';
-        ctx.font = 'bold 18px sans-serif';
-        ctx.fillText('LANE DETECTION ZONE', lx, ly - 15);
-
-        // 2. Draw Detections
-        currentDetections.forEach(prediction => {
-          const [x, y, width, height] = prediction.bbox;
-          const isInside = checkInsideLane(prediction.bbox, videoWidth, videoHeight);
-
-          // Green if inside (counted), Red if outside/partial (not counted)
-          ctx.strokeStyle = isInside ? '#10b981' : '#f43f5e';
-          ctx.setLineDash([]);
-          ctx.lineWidth = 3;
-          ctx.strokeRect(x, y, width, height);
-
-          // Status Badge
-          ctx.fillStyle = isInside ? '#10b981' : '#f43f5e';
-          const labelWidth = isInside ? 110 : 110;
-          ctx.fillRect(x, y - 28, labelWidth, 28);
-          
-          ctx.fillStyle = 'white';
-          ctx.font = 'bold 12px sans-serif';
-          ctx.fillText(
-            isInside ? `CAR [IN LANE]` : `CAR [OUTSIDE]`, 
-            x + 8, 
-            y - 10
-          );
-        });
-      }
-    }
-    requestRef.current = requestAnimationFrame(detect);
-  }, [laneFrame]);
-
-  useEffect(() => {
-    initModel();
-    setupCamera();
-    return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (isCameraReady && !isModelLoading) {
-      detect();
-    }
-  }, [isCameraReady, isModelLoading, detect]);
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-8 flex flex-col items-center">
-      <header className="max-w-4xl w-full mb-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-500/20 rounded-lg">
-              <Car className="text-blue-400" size={32} />
-            </div>
-            <h1 className="text-3xl font-black tracking-tight">Lane Sentinel</h1>
-          </div>
-          <p className="text-slate-500 font-medium">Toy car spatial monitoring system</p>
-        </div>
-        
-        <div className="flex items-center gap-6 bg-slate-900/50 backdrop-blur-sm p-5 rounded-3xl border border-slate-800 shadow-2xl">
-          <div className="text-center px-6 border-r border-slate-700">
-            <span className="block text-[10px] uppercase tracking-[0.2em] text-slate-400 font-black mb-1">Active Count</span>
-            <span className="text-5xl font-black text-white leading-none">{carCount}</span>
-          </div>
-          <div className="flex flex-col gap-2 text-xs font-semibold">
-            <div className="flex items-center gap-2 text-emerald-400">
-              <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
-              <span>Inside Lane</span>
-            </div>
-            <div className="flex items-center gap-2 text-rose-400">
-              <div className="w-2.5 h-2.5 bg-rose-500 rounded-full shadow-[0_0_8px_rgba(244,63,94,0.6)]"></div>
-              <span>Excluded</span>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Detection Viewport */}
-        <div className="lg:col-span-8 relative bg-black rounded-[2.5rem] overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.5)] border-8 border-slate-900 aspect-video group">
-          {isModelLoading && (
-            <div className="absolute inset-0 z-20 bg-slate-950 flex flex-col items-center justify-center text-center p-8">
-              <RefreshCw className="animate-spin text-blue-500 mb-6" size={56} />
-              <h3 className="text-2xl font-bold">Warming Up AI...</h3>
-              <p className="text-slate-500 mt-2 max-w-xs">Connecting to TensorFlow clusters and loading detection weights</p>
-            </div>
-          )}
-
-          {error && (
-            <div className="absolute inset-0 z-30 bg-rose-950/95 flex flex-col items-center justify-center text-center p-8">
-              <div className="bg-rose-500/20 p-4 rounded-full mb-6">
-                <AlertCircle className="text-rose-500" size={64} />
-              </div>
-              <h3 className="text-2xl font-black text-rose-100">System Offline</h3>
-              <p className="text-rose-200/60 mt-2 max-w-md">{error}</p>
-              <button 
-                onClick={() => window.location.reload()}
-                className="mt-8 px-8 py-3 bg-white text-black hover:bg-rose-50 rounded-xl transition-all font-bold shadow-xl active:scale-95"
-              >
-                Reboot System
-              </button>
-            </div>
-          )}
-
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="absolute inset-0 w-full h-full object-cover opacity-70"
-          />
-          <canvas
-            ref={canvasRef}
-            className="absolute inset-0 w-full h-full object-cover z-10"
-          />
-          
-          {/* Subtle scanning line effect */}
-          <div className="absolute inset-0 pointer-events-none z-0 opacity-20 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%]" />
-        </div>
-
-        {/* Sidebar Controls */}
-        <div className="lg:col-span-4 space-y-6">
-          <div className="bg-slate-900/80 backdrop-blur-md p-8 rounded-[2rem] border border-slate-800 shadow-xl">
-            <h2 className="text-xl font-black mb-6 flex items-center gap-3">
-              <Layout size={24} className="text-blue-400" />
-              Lane Geometry
-            </h2>
-            
-            <div className="space-y-6">
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Width</label>
-                  <span className="text-xs font-mono text-blue-400">{Math.round(laneFrame.width * 100)}%</span>
+                    <!-- AI Processing Indicator -->
+                    <div id="loadingIndicator" class="absolute inset-0 bg-black/60 hidden flex-col items-center justify-center">
+                        <div class="animate-spin rounded-full h-12 w-12 border-4 border-amber-500 border-t-transparent"></div>
+                        <p class="mt-4 text-amber-500 font-medium">Analyzing Frame...</p>
+                    </div>
                 </div>
-                <input 
-                  type="range" min="0.1" max="0.9" step="0.01"
-                  value={laneFrame.width}
-                  onChange={(e) => setLaneFrame(p => ({...p, width: parseFloat(e.target.value)}))}
-                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                />
-              </div>
 
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Height</label>
-                  <span className="text-xs font-mono text-blue-400">{Math.round(laneFrame.height * 100)}%</span>
+                <div class="flex flex-wrap gap-4 justify-center">
+                    <button id="startBtn" class="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg font-bold transition">Start Camera</button>
+                    <button id="detectBtn" class="px-6 py-2 bg-amber-600 hover:bg-amber-500 rounded-lg font-bold transition disabled:opacity-50" disabled>Check Lane</button>
                 </div>
-                <input 
-                  type="range" min="0.1" max="0.9" step="0.01"
-                  value={laneFrame.height}
-                  onChange={(e) => setLaneFrame(p => ({...p, height: parseFloat(e.target.value)}))}
-                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                />
-              </div>
+            </div>
 
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Vertical Offset</label>
-                  <span className="text-xs font-mono text-blue-400">{Math.round(laneFrame.y * 100)}%</span>
+            <!-- Stats & Feedback -->
+            <div class="space-y-6">
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+                    <h2 class="text-slate-400 uppercase text-xs font-bold tracking-widest mb-4">Live Statistics</h2>
+                    
+                    <div class="space-y-6">
+                        <div>
+                            <p class="text-sm text-slate-400">Total Cars in Lane</p>
+                            <div class="flex items-baseline gap-2">
+                                <span id="carCount" class="text-6xl font-black text-amber-400">0</span>
+                                <span class="text-slate-500">Units</span>
+                            </div>
+                        </div>
+
+                        <div class="pt-4 border-t border-slate-700">
+                            <p class="text-xs font-bold text-slate-500 mb-2 uppercase">Status</p>
+                            <div id="statusText" class="status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300">
+                                Waiting for input
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <input 
-                  type="range" min="0" max="0.6" step="0.01"
-                  value={laneFrame.y}
-                  onChange={(e) => setLaneFrame(p => ({...p, y: parseFloat(e.target.value)}))}
-                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                />
-              </div>
-            </div>
-          </div>
 
-          <div className="bg-indigo-950/30 border border-indigo-500/20 p-6 rounded-[2rem] relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-4 opacity-10">
-              <Info size={48} />
+                <div class="bg-slate-800/50 p-4 rounded-xl text-sm text-slate-400 italic">
+                    Note: Objects are counted only if they are fully contained within the yellow dashed frame. Partial inclusions are subtracted from the total potential count.
+                </div>
             </div>
-            <h3 className="text-sm font-black text-indigo-400 mb-4 flex items-center gap-2">
-              Operational Logic
-            </h3>
-            <ul className="text-xs text-slate-400 space-y-3">
-              <li className="flex gap-2">
-                <span className="text-indigo-500 font-bold">01.</span>
-                <span>The system identifies vehicles (cars/trucks) with {`>`}50% confidence.</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-indigo-500 font-bold">02.</span>
-                <span>The coordinate check ensures the car is <span className="text-white italic">entirely</span> inside the blue box.</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-indigo-500 font-bold">03.</span>
-                <span>Moving a car out of the lane subtracts it from the counter in real-time.</span>
-              </li>
-            </ul>
-          </div>
         </div>
-      </main>
-
-      <footer className="mt-12 text-slate-700 text-[10px] uppercase tracking-[0.3em] font-bold">
-        Neural Engine v2.5 • Edge Processing Enabled
-      </footer>
     </div>
-  );
-};
 
-export default App;
+    <!-- Hidden audio for feedback -->
+    <audio id="beepSound" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
+
+    <script type="module">
+        const apiKey = ""; // Runtime provides this
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const startBtn = document.getElementById('startBtn');
+        const detectBtn = document.getElementById('detectBtn');
+        const carCountEl = document.getElementById('carCount');
+        const statusText = document.getElementById('statusText');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const laneFrame = document.getElementById('laneFrame');
+
+        let currentCount = 0;
+
+        // Initialize Camera
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } 
+                });
+                video.srcObject = stream;
+                startBtn.classList.add('hidden');
+                detectBtn.disabled = false;
+                statusText.innerText = "Camera Active";
+                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-emerald-900/50 text-emerald-400";
+            } catch (err) {
+                console.error("Camera error:", err);
+                statusText.innerText = "Camera Access Denied";
+                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-red-900/50 text-red-400";
+            }
+        }
+
+        async function detectCars() {
+            loadingIndicator.style.display = 'flex';
+            statusText.innerText = "Analyzing...";
+
+            // Capture Frame
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0);
+            const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+            // Get Lane Rect Coordinates relative to video resolution
+            const videoRect = video.getBoundingClientRect();
+            const frameRect = laneFrame.getBoundingClientRect();
+            
+            // Normalized coordinates for the prompt (0-1000 scale is standard for vision prompts)
+            const laneBox = {
+                ymin: Math.round(((frameRect.top - videoRect.top) / videoRect.height) * 1000),
+                xmin: Math.round(((frameRect.left - videoRect.left) / videoRect.width) * 1000),
+                ymax: Math.round(((frameRect.bottom - videoRect.top) / videoRect.height) * 1000),
+                xmax: Math.round(((frameRect.right - videoRect.left) / videoRect.width) * 1000)
+            };
+
+            const prompt = `Analyze this image for toy cars.
+            The detection lane is defined by these normalized coordinates: [ymin: ${laneBox.ymin}, xmin: ${laneBox.xmin}, ymax: ${laneBox.ymax}, xmax: ${laneBox.xmax}].
+            
+            Find all toy cars. For each car, determine if its bounding box is COMPLETELY inside the lane.
+            Return a JSON object with:
+            1. "total_found": total number of toy cars in the whole image.
+            2. "inside_lane": number of toy cars fully contained within the lane boundaries.
+            3. "partial_or_outside": number of toy cars either outside or only partially inside.
+            4. "final_count": The "inside_lane" count. Ensure this never goes below 0.`;
+
+            try {
+                const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{
+                            role: "user",
+                            parts: [
+                                { text: prompt },
+                                { inlineData: { mimeType: "image/jpeg", data: base64Image } }
+                            ]
+                        }],
+                        generationConfig: {
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: "OBJECT",
+                                properties: {
+                                    total_found: { type: "NUMBER" },
+                                    inside_lane: { type: "NUMBER" },
+                                    partial_or_outside: { type: "NUMBER" },
+                                    final_count: { type: "NUMBER" }
+                                }
+                            }
+                        }
+                    })
+                });
+
+                const result = await response.json();
+                const data = JSON.parse(result.candidates[0].content.parts[0].text);
+                
+                updateDisplay(data);
+            } catch (err) {
+                console.error("Detection Error:", err);
+                statusText.innerText = "Connection Error";
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+
+        function updateDisplay(data) {
+            const count = Math.max(0, data.final_count);
+            carCountEl.innerText = count;
+            
+            if (data.partial_or_outside > 0) {
+                statusText.innerText = `${data.partial_or_outside} car(s) excluded (outside lane)`;
+                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-amber-900/50 text-amber-400";
+            } else if (count > 0) {
+                statusText.innerText = "Cars detected in lane";
+                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-emerald-900/50 text-emerald-400";
+                document.getElementById('beepSound').play().catch(() => {});
+            } else {
+                statusText.innerText = "Lane Clear";
+                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300";
+            }
+        }
+
+        async function fetchWithRetry(url, options, retries = 5, backoff = 1000) {
+            try {
+                const res = await fetch(url, options);
+                if (!res.ok && retries > 0) throw new Error(res.statusText);
+                return res;
+            } catch (err) {
+                if (retries <= 0) throw err;
+                await new Promise(resolve => setTimeout(resolve, backoff));
+                return fetchWithRetry(url, options, retries - 1, backoff * 2);
+            }
+        }
+
+        startBtn.addEventListener('click', startCamera);
+        detectBtn.addEventListener('click', detectCars);
+    </script>
+</body>
+</html>
