@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toll Gate Lane Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .lane-overlay {
+            border: 4px dashed #fbbf24;
+            background-color: rgba(251, 191, 36, 0.1);
+            pointer-events: none;
+        }
+        .status-pill {
+            transition: all 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen font-sans">
+
+    <!-- Container width decreased to max-w-5xl for a slightly narrower 'breath' -->
+    <div class="max-w-5xl mx-auto p-4 md:p-12">
+        <header class="mb-10 text-center">
+            <h1 class="text-5xl font-extrabold text-amber-400 mb-3 tracking-tight">Toll Gate Lane Monitor</h1>
+            <p class="text-xl text-slate-400">Automated vehicle detection for designated transit lanes</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <!-- Camera Feed Section -->
+            <div class="lg:col-span-3 space-y-6">
+                <div class="relative rounded-2xl overflow-hidden bg-black aspect-video shadow-2xl border-2 border-slate-700">
+                    <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
+                    <canvas id="canvas" class="hidden"></canvas>
+                    
+                    <!-- Lane Overlay -->
+                    <div id="laneFrame" class="lane-overlay absolute inset-0 m-6 md:m-10 flex items-center justify-center">
+                        <span class="text-amber-400 font-bold opacity-50 uppercase tracking-[0.3em] text-lg">Active Toll Lane</span>
+                    </div>
+
+                    <!-- AI Processing Indicator -->
+                    <div id="loadingIndicator" class="absolute inset-0 bg-black/60 hidden flex-col items-center justify-center">
+                        <div class="animate-spin rounded-full h-16 w-16 border-4 border-amber-500 border-t-transparent"></div>
+                        <p class="mt-6 text-amber-500 text-lg font-bold">Scanning Lane...</p>
+                    </div>
+                </div>
+
+                <div class="flex flex-wrap gap-4 justify-center">
+                    <button id="startBtn" class="px-8 py-4 bg-emerald-600 hover:bg-emerald-500 rounded-xl font-black text-lg shadow-lg shadow-emerald-900/20 transition-all active:scale-95">Start Camera</button>
+                    <!-- Added End Camera Button -->
+                    <button id="stopBtn" class="hidden px-8 py-4 bg-rose-600 hover:bg-rose-500 rounded-xl font-black text-lg shadow-lg shadow-rose-900/20 transition-all active:scale-95">End Camera</button>
+                    <button id="detectBtn" class="px-8 py-4 bg-amber-600 hover:bg-amber-500 rounded-xl font-black text-lg shadow-lg shadow-amber-900/20 transition-all active:scale-95 disabled:opacity-50" disabled>Check Lane</button>
+                </div>
+            </div>
+
+            <!-- Stats & Feedback -->
+            <div class="space-y-6">
+                <div class="bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl h-full flex flex-col justify-between">
+                    <div>
+                        <h2 class="text-slate-400 uppercase text-sm font-black tracking-widest mb-6 border-b border-slate-700 pb-2">Analytics</h2>
+                        
+                        <div class="space-y-8">
+                            <div>
+                                <p class="text-sm font-medium text-slate-400 mb-1">Vehicles in Lane</p>
+                                <div class="flex items-baseline gap-3">
+                                    <span id="carCount" class="text-8xl font-black text-amber-400 leading-none">0</span>
+                                    <span class="text-slate-500 font-bold">Units</span>
+                                </div>
+                            </div>
+
+                            <div class="pt-6 border-t border-slate-700">
+                                <p class="text-xs font-bold text-slate-500 mb-3 uppercase">Gate Status</p>
+                                <div id="statusText" class="status-pill inline-block w-full text-center px-4 py-3 rounded-xl text-sm font-black bg-slate-700 text-slate-300">
+                                    System Offline
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-8 bg-slate-900/50 p-4 rounded-xl text-sm text-slate-500 leading-relaxed">
+                        <strong class="text-slate-400">Logic:</strong> Vehicles must be fully within the yellow perimeter for processing. Partial intrusions are automatically filtered from the valid toll count.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden audio for feedback -->
+    <audio id="beepSound" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
+
+    <script type="module">
+        const apiKey = ""; // Runtime provides this
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const detectBtn = document.getElementById('detectBtn');
+        const carCountEl = document.getElementById('carCount');
+        const statusText = document.getElementById('statusText');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const laneFrame = document.getElementById('laneFrame');
+
+        let streamInstance = null;
+
+        // Initialize Camera
+        async function startCamera() {
+            try {
+                streamInstance = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+                });
+                video.srcObject = streamInstance;
+                startBtn.classList.add('hidden');
+                stopBtn.classList.remove('hidden');
+                detectBtn.disabled = false;
+                statusText.innerText = "System Online";
+                statusText.className = "status-pill inline-block w-full text-center px-4 py-3 rounded-xl text-sm font-black bg-emerald-900/30 text-emerald-400 border border-emerald-500/30";
+            } catch (err) {
+                console.error("Camera error:", err);
+                statusText.innerText = "Hardware Fault";
+                statusText.className = "status-pill inline-block w-full text-center px-4 py-3 rounded-xl text-sm font-black bg-red-900/30 text-red-400 border border-red-500/30";
+            }
+        }
+
+        // End Camera Functionality
+        function stopCamera() {
+            if (streamInstance) {
+                streamInstance.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+                streamInstance = null;
+            }
+            startBtn.classList.remove('hidden');
+            stopBtn.classList.add('hidden');
+            detectBtn.disabled = true;
+            carCountEl.innerText = "0";
+            statusText.innerText = "System Offline";
+            statusText.className = "status-pill inline-block w-full text-center px-4 py-3 rounded-xl text-sm font-black bg-slate-700 text-slate-300 border border-transparent";
+        }
+
+        async function detectCars() {
+            if (!streamInstance) return;
+
+            loadingIndicator.style.display = 'flex';
+            statusText.innerText = "Processing Data...";
+
+            // Capture Frame
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0);
+            const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+            // Get Lane Rect Coordinates relative to video resolution
+            const videoRect = video.getBoundingClientRect();
+            const frameRect = laneFrame.getBoundingClientRect();
+            
+            const laneBox = {
+                ymin: Math.round(((frameRect.top - videoRect.top) / videoRect.height) * 1000),
+                xmin: Math.round(((frameRect.left - videoRect.left) / videoRect.width) * 1000),
+                ymax: Math.round(((frameRect.bottom - videoRect.top) / videoRect.height) * 1000),
+                xmax: Math.round(((frameRect.right - videoRect.left) / videoRect.width) * 1000)
+            };
+
+            const prompt = `Analyze this image for vehicles (specifically toy cars for this simulation).
+            The detection lane is defined by these normalized coordinates: [ymin: ${laneBox.ymin}, xmin: ${laneBox.xmin}, ymax: ${laneBox.ymax}, xmax: ${laneBox.xmax}].
+            
+            Detect all vehicles. Determine if each vehicle's bounding box is COMPLETELY inside the lane.
+            Return a JSON object with:
+            1. "total_found": total number of vehicles in view.
+            2. "inside_lane": number of vehicles fully contained within the lane boundaries.
+            3. "partial_or_outside": number of vehicles either outside or only partially inside.
+            4. "final_count": The "inside_lane" count. Ensure this never goes below 0.`;
+
+            try {
+                const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{
+                            role: "user",
+                            parts: [
+                                { text: prompt },
+                                { inlineData: { mimeType: "image/jpeg", data: base64Image } }
+                            ]
+                        }],
+                        generationConfig: {
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: "OBJECT",
+                                properties: {
+                                    total_found: { type: "NUMBER" },
+                                    inside_lane: { type: "NUMBER" },
+                                    partial_or_outside: { type: "NUMBER" },
+                                    final_count: { type: "NUMBER" }
+                                }
+                            }
+                        }
+                    })
+                });
+
+                const result = await response.json();
+                const data = JSON.parse(result.candidates[0].content.parts[0].text);
+                
+                updateDisplay(data);
+            } catch (err) {
+                console.error("Detection Error:", err);
+                statusText.innerText = "Network Error";
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+
+        function updateDisplay(data) {
+            const count = Math.max(0, data.final_count);
+            carCountEl.innerText = count;
+            
+            if (data.partial_or_outside > 0 && count === 0) {
+                statusText.innerText = "Obstruction Outside Lane";
+                statusText.className = "status-pill inline-block w-full text-center px-4 py-3 rounded-xl text-sm font-black bg-amber-900/30 text-amber-400 border border-amber-500/30";
+            } else if (count > 0) {
+                statusText.innerText = "Traffic Detected";
+                statusText.className = "status-pill inline-block w-full text-center px-4 py-3 rounded-xl text-sm font-black bg-emerald-900/30 text-emerald-400 border border-emerald-500/30";
+                document.getElementById('beepSound').play().catch(() => {});
+            } else {
+                statusText.innerText = "Lane Clear";
+                statusText.className = "status-pill inline-block w-full text-center px-4 py-3 rounded-xl text-sm font-black bg-slate-700 text-slate-400 border border-slate-600";
+            }
+        }
+
+        async function fetchWithRetry(url, options, retries = 5, backoff = 1000) {
+            try {
+                const res = await fetch(url, options);
+                if (!res.ok && retries > 0) throw new Error(res.statusText);
+                return res;
+            } catch (err) {
+                if (retries <= 0) throw err;
+                await new Promise(resolve => setTimeout(resolve, backoff));
+                return fetchWithRetry(url, options, retries - 1, backoff * 2);
+            }
+        }
+
+        startBtn.addEventListener('click', startCamera);
+        stopBtn.addEventListener('click', stopCamera);
+        detectBtn.addEventListener('click', detectCars);
+    </script>
+</body>
+</html>
