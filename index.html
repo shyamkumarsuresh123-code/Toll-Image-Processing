@@ -3,201 +3,218 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Toy Car Lane Detector</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Toy Car Lane Counter</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
     <style>
-        .lane-overlay {
-            border: 4px dashed #fbbf24;
-            background-color: rgba(251, 191, 36, 0.1);
-            pointer-events: none;
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
         }
-        .status-pill {
-            transition: all 0.3s ease;
+
+        h1 { color: #333; }
+
+        #status {
+            margin-bottom: 10px;
+            font-weight: bold;
+            color: #d9534f;
+        }
+
+        /* Container to stack canvas over video */
+        #container {
+            position: relative;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.19), 0 6px 6px rgba(0,0,0,0.23);
+            border-radius: 8px;
+            overflow: hidden;
+            background: #000;
+            width: 640px;
+            height: 480px;
+        }
+
+        video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 2;
+        }
+
+        .controls {
+            margin-top: 15px;
+            background: white;
+            padding: 15px 30px;
+            border-radius: 50px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        #count-display {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #28a745; /* Green */
         }
     </style>
 </head>
-<body class="bg-slate-900 text-white min-h-screen font-sans">
+<body>
 
-    <div class="max-w-4xl mx-auto p-4 md:p-8">
-        <header class="mb-8 text-center">
-            <h1 class="text-3xl font-bold text-amber-400 mb-2">Toy Car Lane Monitor</h1>
-            <p class="text-slate-400">Detecting cars within the designated lane area</p>
-        </header>
+    <h1>🚗 Toy Car Lane Counter</h1>
+    <div id="status">Loading Model... Please wait.</div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div class="md:col-span-2 space-y-4">
-                <div class="relative rounded-xl overflow-hidden bg-black aspect-video shadow-2xl border border-slate-700">
-                    <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
-                    <canvas id="canvas" class="hidden"></canvas>
-                    
-                    <div id="laneFrame" class="lane-overlay absolute inset-0 m-12 md:m-20 flex items-center justify-center">
-                        <span class="text-amber-400 font-bold opacity-50 uppercase tracking-widest text-sm">Detection Lane</span>
-                    </div>
-
-                    <div id="loadingIndicator" class="absolute inset-0 bg-black/60 hidden flex-col items-center justify-center">
-                        <div class="animate-spin rounded-full h-12 w-12 border-4 border-amber-500 border-t-transparent"></div>
-                        <p class="mt-4 text-amber-500 font-medium">Analyzing Frame...</p>
-                    </div>
-                </div>
-
-                <div class="flex flex-wrap gap-4 justify-center">
-                    <button id="startBtn" class="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg font-bold transition">Start Camera</button>
-                    <button id="detectBtn" class="px-6 py-2 bg-amber-600 hover:bg-amber-500 rounded-lg font-bold transition disabled:opacity-50" disabled>Check Lane</button>
-                </div>
-            </div>
-
-            <div class="space-y-6">
-                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-                    <h2 class="text-slate-400 uppercase text-xs font-bold tracking-widest mb-4">Live Statistics</h2>
-                    
-                    <div class="space-y-6">
-                        <div>
-                            <p class="text-sm text-slate-400">Total Cars in Lane</p>
-                            <div class="flex items-baseline gap-2">
-                                <span id="carCount" class="text-6xl font-black text-amber-400">0</span>
-                                <span class="text-slate-500">Units</span>
-                            </div>
-                        </div>
-
-                        <div class="pt-4 border-t border-slate-700">
-                            <p class="text-xs font-bold text-slate-500 mb-2 uppercase">Status</p>
-                            <div id="statusText" class="status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300">
-                                Waiting for input
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="bg-slate-800/50 p-4 rounded-xl text-sm text-slate-400 italic">
-                    Note: Objects are counted only if they are fully contained within the yellow dashed frame.
-                </div>
-            </div>
-        </div>
+    <div id="container">
+        <video id="video" width="640" height="480" autoplay muted playsinline></video>
+        <canvas id="canvas" width="640" height="480"></canvas>
     </div>
 
-    <audio id="beepSound" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
+    <div class="controls">
+        Lane Count: <span id="count-display">0</span>
+    </div>
 
-    <script type="module">
-        // Replace with your actual Gemini API Key
-        const apiKey = "YOUR_ACTUAL_API_KEY"; 
+    <script>
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
-        const startBtn = document.getElementById('startBtn');
-        const detectBtn = document.getElementById('detectBtn');
-        const carCountEl = document.getElementById('carCount');
-        const statusText = document.getElementById('statusText');
-        const loadingIndicator = document.getElementById('loadingIndicator');
-        const laneFrame = document.getElementById('laneFrame');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status');
+        const countDisplay = document.getElementById('count-display');
 
-        async function startCamera() {
+        // --- CONFIGURATION ---
+        // Define the "Lane" (The rectangular frame)
+        // Values are: x, y, width, height
+        const LANE_RECT = { x: 170, y: 100, w: 300, h: 280 }; 
+        
+        let model = null;
+
+        // 1. Load Model & Setup Camera
+        async function setup() {
             try {
+                // Load the COCO-SSD model (pre-trained object detection)
+                model = await cocoSsd.load();
+                statusText.innerText = "Model Loaded. Starting Camera...";
+                statusText.style.color = "#f0ad4e";
+
+                // Access Webcam
                 const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: 'environment' } 
+                    video: { width: 640, height: 480 } 
                 });
                 video.srcObject = stream;
-                startBtn.classList.add('hidden');
-                detectBtn.disabled = false;
-                statusText.innerText = "Camera Active";
-                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-emerald-900/50 text-emerald-400";
+
+                // Wait for video to load data
+                video.onloadeddata = () => {
+                    statusText.innerText = "Running Detection...";
+                    statusText.style.color = "#28a745";
+                    detectFrame();
+                };
             } catch (err) {
-                console.error("Camera error:", err);
-                statusText.innerText = "Camera Access Denied";
-                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-red-900/50 text-red-400";
+                statusText.innerText = "Error: " + err.message;
+                console.error(err);
             }
         }
 
-        async function detectCars() {
-            loadingIndicator.style.display = 'flex';
-            statusText.innerText = "Analyzing...";
-
-            // Capture Frame
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0);
-            const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-
-            // Calculate Normalized Coordinates
-            const videoRect = video.getBoundingClientRect();
-            const frameRect = laneFrame.getBoundingClientRect();
+        // 2. Detection Loop
+        async function detectFrame() {
+            // Draw the current video frame to the canvas (optional, but good for syncing)
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            const laneBox = {
-                ymin: Math.round(((frameRect.top - videoRect.top) / videoRect.height) * 1000),
-                xmin: Math.round(((frameRect.left - videoRect.left) / videoRect.width) * 1000),
-                ymax: Math.round(((frameRect.bottom - videoRect.top) / videoRect.height) * 1000),
-                xmax: Math.round(((frameRect.right - videoRect.left) / videoRect.width) * 1000)
-            };
+            // Get predictions from the model
+            // We look for objects in the video element
+            const predictions = await model.detect(video);
 
-            const prompt = `Identify all toy cars in this image. 
-            The lane boundaries are: ymin: ${laneBox.ymin}, xmin: ${laneBox.xmin}, ymax: ${laneBox.ymax}, xmax: ${laneBox.xmax}.
-            Only count a car as "inside_lane" if its entire physical body is within those coordinates.
-            Return JSON: {"total_found": number, "inside_lane": number, "partial_or_outside": number, "final_count": number}`;
+            // Draw the "Lane" Frame
+            drawLane();
 
-            try {
-                // Corrected model: gemini-2.0-flash
-                const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{
-                            role: "user",
-                            parts: [
-                                { text: prompt },
-                                { inlineData: { mimeType: "image/jpeg", data: base64Image } }
-                            ]
-                        }],
-                        generationConfig: {
-                            responseMimeType: "application/json"
-                        }
-                    })
-                });
+            let currentLaneCount = 0;
 
-                const result = await response.json();
-                
-                if (result.candidates && result.candidates[0].content.parts[0].text) {
-                    const data = JSON.parse(result.candidates[0].content.parts[0].text);
-                    updateDisplay(data);
+            // Process predictions
+            predictions.forEach(prediction => {
+                // prediction.class gives the object type (e.g., 'car', 'truck')
+                // prediction.bbox gives [x, y, width, height]
+
+                // Filter: We only care about cars or trucks (common for toy cars)
+                const validTypes = ['car', 'truck', 'bus'];
+                if (validTypes.includes(prediction.class)) {
+                    
+                    const [x, y, width, height] = prediction.bbox;
+
+                    // Check if the object is fully inside the lane
+                    const isInside = isFullyInside(x, y, width, height, LANE_RECT);
+
+                    if (isInside) {
+                        currentLaneCount++;
+                        // Draw Green Box (Counted)
+                        drawBox(x, y, width, height, prediction.class, 'green');
+                    } else {
+                        // Draw Red Box (Not Counted / Partial)
+                        drawBox(x, y, width, height, prediction.class, 'red');
+                    }
                 }
-            } catch (err) {
-                console.error("Detection Error:", err);
-                statusText.innerText = "Analysis Failed";
-                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-red-900/50 text-red-400";
-            } finally {
-                loadingIndicator.style.display = 'none';
-            }
+            });
+
+            // Update the display text
+            // "No negative values" is handled because count starts at 0 every frame
+            countDisplay.innerText = currentLaneCount;
+
+            // Loop
+            requestAnimationFrame(detectFrame);
         }
 
-        function updateDisplay(data) {
-            const count = Math.max(0, data.inside_lane || 0);
-            carCountEl.innerText = count;
+        // --- HELPER FUNCTIONS ---
+
+        // Draw the static Lane Frame
+        function drawLane() {
+            ctx.strokeStyle = 'blue';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([10, 5]); // Dashed line for effect
+            ctx.strokeRect(LANE_RECT.x, LANE_RECT.y, LANE_RECT.w, LANE_RECT.h);
+            ctx.setLineDash([]); // Reset dash
             
-            if (data.partial_or_outside > 0) {
-                statusText.innerText = `${data.partial_or_outside} car(s) outside lane`;
-                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-amber-900/50 text-amber-400";
-            } else if (count > 0) {
-                statusText.innerText = "Lane Clear (Cars Detected)";
-                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-emerald-900/50 text-emerald-400";
-                document.getElementById('beepSound').play().catch(() => {});
-            } else {
-                statusText.innerText = "Lane Empty";
-                statusText.className = "status-pill inline-block px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300";
-            }
+            // Label the lane
+            ctx.fillStyle = 'blue';
+            ctx.font = '16px Arial';
+            ctx.fillText("LANE AREA", LANE_RECT.x + 5, LANE_RECT.y + 20);
         }
 
-        async function fetchWithRetry(url, options, retries = 3, backoff = 1500) {
-            try {
-                const res = await fetch(url, options);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                return res;
-            } catch (err) {
-                if (retries <= 0) throw err;
-                await new Promise(r => setTimeout(r, backoff));
-                return fetchWithRetry(url, options, retries - 1, backoff * 2);
-            }
+        // Check if Box A (Object) is FULLY inside Box B (Lane)
+        function isFullyInside(objX, objY, objW, objH, lane) {
+            const objRight = objX + objW;
+            const objBottom = objY + objH;
+            const laneRight = lane.x + lane.w;
+            const laneBottom = lane.y + lane.h;
+
+            return (
+                objX >= lane.x &&           // Left edge is inside
+                objY >= lane.y &&           // Top edge is inside
+                objRight <= laneRight &&    // Right edge is inside
+                objBottom <= laneBottom     // Bottom edge is inside
+            );
         }
 
-        startBtn.addEventListener('click', startCamera);
-        detectBtn.addEventListener('click', detectCars);
+        // Draw object bounding box
+        function drawBox(x, y, w, h, label, color) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, w, h);
+
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y - 20, w, 20); // Label background
+
+            ctx.fillStyle = 'white';
+            ctx.font = '12px Arial';
+            ctx.fillText(label, x + 5, y - 5);
+        }
+
+        // Start the app
+        setup();
+
     </script>
 </body>
 </html>
