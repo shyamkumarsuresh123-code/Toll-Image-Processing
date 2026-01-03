@@ -3,217 +3,398 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Toy Car Lane Counter</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
-
+    <title>Gemini Toy Car Detector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f0f2f5;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            margin: 0;
-            padding: 20px;
-        }
+        body { font-family: 'JetBrains Mono', monospace; }
+        
+        /* Mirror the canvas for natural webcam feel */
+        #output { transform: scaleX(-1); }
+        
+        /* We need a separate container for non-mirrored UI overlays if we wanted them, 
+           but here we draw everything on canvas and flip the text context manually. */
 
-        h1 { color: #333; }
-
-        #status {
-            margin-bottom: 10px;
-            font-weight: bold;
-            color: #d9534f;
-        }
-
-        /* Container to stack canvas over video */
-        #container {
-            position: relative;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.19), 0 6px 6px rgba(0,0,0,0.23);
-            border-radius: 8px;
-            overflow: hidden;
-            background: #000;
-            width: 640px;
-            height: 480px;
-        }
-
-        video {
+        .scan-line {
             position: absolute;
             top: 0;
             left: 0;
-            z-index: 1;
+            width: 100%;
+            height: 4px;
+            background: #10b981;
+            box-shadow: 0 0 15px #10b981;
+            animation: scan 2s linear infinite;
+            opacity: 0.5;
+            pointer-events: none;
+            display: none; 
         }
-
-        canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            z-index: 2;
+        @keyframes scan {
+            0% { top: 0%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
         }
-
-        .controls {
-            margin-top: 15px;
-            background: white;
-            padding: 15px 30px;
-            border-radius: 50px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        .retro-grid {
+            background-image: linear-gradient(rgba(16, 185, 129, 0.1) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(16, 185, 129, 0.1) 1px, transparent 1px);
+            background-size: 20px 20px;
         }
-
-        #count-display {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #28a745; /* Green */
-        }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #020617; }
+        ::-webkit-scrollbar-thumb { background: #10b981; border-radius: 4px; }
     </style>
 </head>
-<body>
+<body class="bg-slate-950 text-emerald-400 min-h-screen flex flex-col items-center justify-center p-4 retro-grid selection:bg-emerald-500/30">
 
-    <h1>🚗 Toy Car Lane Counter</h1>
-    <div id="status">Loading Model... Please wait.</div>
-
-    <div id="container">
-        <video id="video" width="640" height="480" autoplay muted playsinline></video>
-        <canvas id="canvas" width="640" height="480"></canvas>
+    <div class="w-full max-w-4xl flex justify-between items-end mb-4 border-b border-emerald-900/50 pb-2">
+        <div>
+            <h1 class="text-2xl font-bold tracking-tighter text-white">VISION<span class="text-emerald-500">_SYSTEM</span> // GEMINI</h1>
+            <p class="text-xs text-emerald-600 mt-1">TARGET: TOY CARS | MODE: API_SNAPSHOT (1.5 FLASH)</p>
+        </div>
+        <div class="flex flex-col items-end">
+            <div id="api-status" class="flex items-center gap-2 text-xs font-bold text-slate-500">
+                <div class="w-2 h-2 rounded-full bg-slate-500"></div> STANDBY
+            </div>
+            <div class="text-[10px] text-slate-600 mt-1">LATENCY: <span id="latency-meter">0</span>ms</div>
+        </div>
     </div>
 
-    <div class="controls">
-        Lane Count: <span id="count-display">0</span>
-    </div>
-
-    <script>
-        const video = document.getElementById('video');
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        const statusText = document.getElementById('status');
-        const countDisplay = document.getElementById('count-display');
-
-        // --- CONFIGURATION ---
-        // Define the "Lane" (The rectangular frame)
-        // Values are: x, y, width, height
-        const LANE_RECT = { x: 170, y: 100, w: 300, h: 280 }; 
+    <div class="relative w-full max-w-4xl aspect-video bg-black rounded-lg border-2 border-emerald-900 overflow-hidden shadow-2xl shadow-emerald-900/20">
         
-        let model = null;
+        <div id="scanner" class="scan-line z-20"></div>
 
-        // 1. Load Model & Setup Camera
-        async function setup() {
+        <div id="start-screen" class="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-md">
+            <div class="border border-emerald-500/30 bg-emerald-950/20 p-8 rounded-none max-w-md text-center">
+                <svg class="w-16 h-16 text-emerald-500 mx-auto mb-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                <h2 class="text-xl font-bold text-white mb-2">INITIALIZE UPLINK</h2>
+                
+                <div class="mb-4 text-left">
+                    <label class="text-[10px] uppercase text-emerald-500 font-bold">Google API Key</label>
+                    <input type="password" id="apiKeyInput" placeholder="Paste Gemini API Key here" class="w-full bg-black/50 border border-emerald-800 text-white text-xs p-3 mt-1 focus:outline-none focus:border-emerald-500 font-mono">
+                    <p class="text-[9px] text-slate-500 mt-1">Key is stored only in browser memory.</p>
+                </div>
+
+                <button onclick="initSystem()" class="w-full group relative px-6 py-3 font-bold text-black bg-emerald-500 hover:bg-emerald-400 transition-all">
+                    <span class="absolute inset-0 border-2 border-white translate-x-1 translate-y-1 transition-transform group-hover:translate-x-0 group-hover:translate-y-0"></span>
+                    CONNECT CAMERA
+                </button>
+            </div>
+        </div>
+
+        <video id="webcam" class="hidden" playsinline muted></video>
+        <canvas id="output" class="w-full h-full object-cover"></canvas>
+
+        <div class="absolute top-4 left-4 z-20 pointer-events-none">
+            <div class="bg-black/80 border border-emerald-500/30 p-4 backdrop-blur-sm">
+                <div class="text-[10px] text-emerald-500/70 uppercase tracking-widest mb-1">In Zone Count</div>
+                <div id="car-count" class="text-5xl font-bold text-white tabular-nums leading-none">0</div>
+            </div>
+        </div>
+
+        <div class="absolute bottom-4 left-4 z-20 flex gap-4 pointer-events-none">
+             <div class="flex items-center gap-2 bg-black/60 px-3 py-1 border border-emerald-500/20">
+                <div class="w-3 h-3 border border-emerald-500 bg-emerald-500/20"></div>
+                <span class="text-[10px] uppercase">Valid Target</span>
+            </div>
+            <div class="flex items-center gap-2 bg-black/60 px-3 py-1 border border-red-500/20">
+                <div class="w-3 h-3 border border-red-500 bg-red-500/20"></div>
+                <span class="text-[10px] uppercase text-red-400">Invalid/Out</span>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // ---------------------------------------------------------
+        // CONFIGURATION
+        // ---------------------------------------------------------
+        const SNAPSHOT_INTERVAL_MS = 1000; // Check every 1 second
+        const LANE_COLOR = '#0ea5e9'; // Cyan for lane
+        const BOX_COLOR_IN = '#10b981'; // Green
+        const BOX_COLOR_OUT = '#ef4444'; // Red
+        
+        // ---------------------------------------------------------
+        // STATE
+        // ---------------------------------------------------------
+        let apiKey = "";
+        let stream = null;
+        let isRunning = false;
+        let currentPredictions = []; 
+        let isAnalyzing = false;
+        let lane = { x: 0, y: 0, w: 0, h: 0 };
+        
+        // DOM Elements
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('output');
+        const ctx = canvas.getContext('2d');
+        const startScreen = document.getElementById('start-screen');
+        const scanner = document.getElementById('scanner');
+        const apiStatus = document.getElementById('api-status');
+        const latencyMeter = document.getElementById('latency-meter');
+        const countDisplay = document.getElementById('car-count');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+
+        // ---------------------------------------------------------
+        // INITIALIZATION
+        // ---------------------------------------------------------
+        window.initSystem = async () => {
+            const inputKey = apiKeyInput.value.trim();
+            if (!inputKey) {
+                alert("Please enter a valid Google API Key.");
+                return;
+            }
+            apiKey = inputKey;
+
             try {
-                // Load the COCO-SSD model (pre-trained object detection)
-                model = await cocoSsd.load();
-                statusText.innerText = "Model Loaded. Starting Camera...";
-                statusText.style.color = "#f0ad4e";
-
-                // Access Webcam
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { width: 640, height: 480 } 
+                startScreen.classList.add('hidden');
+                
+                // Get Camera
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: false
                 });
+                
                 video.srcObject = stream;
-
-                // Wait for video to load data
-                video.onloadeddata = () => {
-                    statusText.innerText = "Running Detection...";
-                    statusText.style.color = "#28a745";
-                    detectFrame();
+                
+                video.onloadedmetadata = () => {
+                    video.play();
+                    
+                    // Set canvas size to match video resolution
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    
+                    updateLane();
+                    
+                    isRunning = true;
+                    scanner.style.display = 'block';
+                    
+                    // Start Loops
+                    requestAnimationFrame(renderLoop);
+                    setInterval(analyzeFrame, SNAPSHOT_INTERVAL_MS);
                 };
+
             } catch (err) {
-                statusText.innerText = "Error: " + err.message;
-                console.error(err);
+                console.error("Init failed:", err);
+                alert("Camera access denied or error: " + err.message);
+                startScreen.classList.remove('hidden');
+            }
+        };
+
+        // ---------------------------------------------------------
+        // LOGIC: LANE & COUNTING
+        // ---------------------------------------------------------
+        function updateLane() {
+            // Lane is 50% width, 70% height, centered
+            const w = canvas.width * 0.5;
+            const h = canvas.height * 0.7;
+            const x = (canvas.width - w) / 2;
+            const y = (canvas.height - h) / 2;
+            lane = { x, y, w, h };
+        }
+
+        // ---------------------------------------------------------
+        // RENDER LOOP (60fps)
+        // ---------------------------------------------------------
+        function renderLoop() {
+            if (!isRunning) return;
+
+            // 1. Draw Video
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // 2. Draw Lane (The Zone)
+            ctx.save();
+            ctx.strokeStyle = LANE_COLOR;
+            ctx.lineWidth = 3;
+            ctx.setLineDash([20, 10]); // Robotic dash look
+            
+            // Draw rect
+            ctx.strokeRect(lane.x, lane.y, lane.w, lane.h);
+            
+            // Lane Fill
+            ctx.fillStyle = 'rgba(14, 165, 233, 0.05)';
+            ctx.fillRect(lane.x, lane.y, lane.w, lane.h);
+            
+            // Lane Labels (Handling text flip on mirrored canvas)
+            // Because CSS flips the canvas, drawing normal text looks backwards.
+            // We must flip the context horizontally to draw text that looks "correct" after CSS flips it back.
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+            
+            ctx.fillStyle = LANE_COLOR;
+            ctx.font = 'bold 12px JetBrains Mono';
+            
+            // Calculating the "Visual Left" in the flipped context
+            // In a flipped context, x=0 is the right edge.
+            const labelX = canvas.width - (lane.x + lane.w); 
+            ctx.fillText("DETECTION ZONE", labelX, lane.y - 10);
+            
+            ctx.restore();
+
+            // 3. Draw Detected Objects
+            let validCount = 0;
+
+            if (currentPredictions && currentPredictions.length > 0) {
+                currentPredictions.forEach(box => {
+                    // Convert 0-1000 scale to pixels
+                    const x = (box.xmin / 1000) * canvas.width;
+                    const y = (box.ymin / 1000) * canvas.height;
+                    const w = ((box.xmax - box.xmin) / 1000) * canvas.width;
+                    const h = ((box.ymax - box.ymin) / 1000) * canvas.height;
+                    
+                    // Calculate Center
+                    const cx = x + (w / 2);
+                    const cy = y + (h / 2);
+                    
+                    // Check if Center is In Lane
+                    const isInLane = (
+                        cx >= lane.x && cx <= (lane.x + lane.w) &&
+                        cy >= lane.y && cy <= (lane.y + lane.h)
+                    );
+
+                    if (isInLane) validCount++;
+
+                    // Draw Box
+                    const color = isInLane ? BOX_COLOR_IN : BOX_COLOR_OUT;
+                    
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 4;
+                    ctx.setLineDash([]);
+                    ctx.beginPath();
+                    
+                    // Corners only style (aesthetic)
+                    const lineLen = Math.min(w, h) * 0.2;
+                    
+                    // Top Left
+                    ctx.moveTo(x, y + lineLen); ctx.lineTo(x, y); ctx.lineTo(x + lineLen, y);
+                    // Top Right
+                    ctx.moveTo(x + w - lineLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + lineLen);
+                    // Bottom Right
+                    ctx.moveTo(x + w, y + h - lineLen); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - lineLen, y + h);
+                    // Bottom Left
+                    ctx.moveTo(x + lineLen, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - lineLen);
+                    
+                    ctx.stroke();
+
+                    // Faint full box
+                    ctx.globalAlpha = 0.2;
+                    ctx.fillStyle = color;
+                    ctx.fillRect(x, y, w, h);
+                    ctx.globalAlpha = 1.0;
+                });
+            }
+
+            // Update UI Count
+            countDisplay.innerText = validCount;
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // ---------------------------------------------------------
+        // API LOGIC: GEMINI 1.5 FLASH
+        // ---------------------------------------------------------
+        async function analyzeFrame() {
+            if (isAnalyzing || !isRunning) return;
+            
+            isAnalyzing = true;
+            const startTime = Date.now();
+            
+            // UI Update
+            apiStatus.innerHTML = `<div class="w-2 h-2 rounded-full bg-yellow-400 animate-ping"></div> ANALYZING`;
+
+            try {
+                // 1. Capture Frame
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = video.videoWidth; 
+                tempCanvas.height = video.videoHeight;
+                // Draw normally. The API wants the raw image.
+                tempCanvas.getContext('2d').drawImage(video, 0, 0);
+                
+                const base64Data = tempCanvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+
+                // 2. Prepare Payload
+                const prompt = `
+                Detect all toy cars in this image.
+                Return a JSON object with this exact schema:
+                {
+                    "detections": [
+                        { "box_2d": [ymin, xmin, ymax, xmax] }
+                    ]
+                }
+                ymin, xmin, ymax, xmax should be integers between 0 and 1000.
+                Only detect items that look like cars, trucks, or toy vehicles.
+                If none, return empty array.
+                Do not include Markdown formatting.
+                `;
+
+                // Using Gemini 1.5 Flash (Fast & Cost efficient)
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+                
+                const payload = {
+                    contents: [{
+                        parts: [
+                            { text: prompt },
+                            { inline_data: { mime_type: "image/jpeg", data: base64Data } }
+                        ]
+                    }],
+                    generationConfig: {
+                        response_mime_type: "application/json"
+                    }
+                };
+
+                // 3. Fetch
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if(!response.ok) throw new Error("API Response not OK");
+
+                const data = await response.json();
+                
+                // 4. Parse
+                if (data.candidates && data.candidates[0].content && data.candidates[0].content.parts[0].text) {
+                    let resultText = data.candidates[0].content.parts[0].text;
+                    
+                    // Sanitize Markdown if present (```json ... ```)
+                    resultText = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+                    const parsed = JSON.parse(resultText);
+                    
+                    if (parsed.detections) {
+                        currentPredictions = parsed.detections.map(d => {
+                            const [ymin, xmin, ymax, xmax] = d.box_2d;
+                            return { ymin, xmin, ymax, xmax };
+                        });
+                    } else {
+                        currentPredictions = [];
+                    }
+                }
+
+                // UI Stats
+                const latency = Date.now() - startTime;
+                latencyMeter.innerText = latency;
+                apiStatus.innerHTML = `<div class="w-2 h-2 rounded-full bg-emerald-500"></div> ACTIVE`;
+
+            } catch (error) {
+                console.error("API Error:", error);
+                apiStatus.innerHTML = `<div class="w-2 h-2 rounded-full bg-red-500"></div> ERROR`;
+                // Clear predictions on error to prevent stuck boxes
+                currentPredictions = []; 
+            } finally {
+                isAnalyzing = false;
             }
         }
 
-        // 2. Detection Loop
-        async function detectFrame() {
-            // Draw the current video frame to the canvas (optional, but good for syncing)
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Get predictions from the model
-            // We look for objects in the video element
-            const predictions = await model.detect(video);
-
-            // Draw the "Lane" Frame
-            drawLane();
-
-            let currentLaneCount = 0;
-
-            // Process predictions
-            predictions.forEach(prediction => {
-                // prediction.class gives the object type (e.g., 'car', 'truck')
-                // prediction.bbox gives [x, y, width, height]
-
-                // Filter: We only care about cars or trucks (common for toy cars)
-                const validTypes = ['car', 'truck', 'bus'];
-                if (validTypes.includes(prediction.class)) {
-                    
-                    const [x, y, width, height] = prediction.bbox;
-
-                    // Check if the object is fully inside the lane
-                    const isInside = isFullyInside(x, y, width, height, LANE_RECT);
-
-                    if (isInside) {
-                        currentLaneCount++;
-                        // Draw Green Box (Counted)
-                        drawBox(x, y, width, height, prediction.class, 'green');
-                    } else {
-                        // Draw Red Box (Not Counted / Partial)
-                        drawBox(x, y, width, height, prediction.class, 'red');
-                    }
-                }
-            });
-
-            // Update the display text
-            // "No negative values" is handled because count starts at 0 every frame
-            countDisplay.innerText = currentLaneCount;
-
-            // Loop
-            requestAnimationFrame(detectFrame);
-        }
-
-        // --- HELPER FUNCTIONS ---
-
-        // Draw the static Lane Frame
-        function drawLane() {
-            ctx.strokeStyle = 'blue';
-            ctx.lineWidth = 4;
-            ctx.setLineDash([10, 5]); // Dashed line for effect
-            ctx.strokeRect(LANE_RECT.x, LANE_RECT.y, LANE_RECT.w, LANE_RECT.h);
-            ctx.setLineDash([]); // Reset dash
-            
-            // Label the lane
-            ctx.fillStyle = 'blue';
-            ctx.font = '16px Arial';
-            ctx.fillText("LANE AREA", LANE_RECT.x + 5, LANE_RECT.y + 20);
-        }
-
-        // Check if Box A (Object) is FULLY inside Box B (Lane)
-        function isFullyInside(objX, objY, objW, objH, lane) {
-            const objRight = objX + objW;
-            const objBottom = objY + objH;
-            const laneRight = lane.x + lane.w;
-            const laneBottom = lane.y + lane.h;
-
-            return (
-                objX >= lane.x &&           // Left edge is inside
-                objY >= lane.y &&           // Top edge is inside
-                objRight <= laneRight &&    // Right edge is inside
-                objBottom <= laneBottom     // Bottom edge is inside
-            );
-        }
-
-        // Draw object bounding box
-        function drawBox(x, y, w, h, label, color) {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x, y, w, h);
-
-            ctx.fillStyle = color;
-            ctx.fillRect(x, y - 20, w, 20); // Label background
-
-            ctx.fillStyle = 'white';
-            ctx.font = '12px Arial';
-            ctx.fillText(label, x + 5, y - 5);
-        }
-
-        // Start the app
-        setup();
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            if (video && video.readyState >= 1) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                updateLane();
+            }
+        });
 
     </script>
 </body>
