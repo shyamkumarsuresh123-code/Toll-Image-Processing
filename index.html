@@ -287,4 +287,293 @@
         });
     </script>
 </body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Toy Car Detector (TF.js)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+    <style>
+        body { font-family: 'JetBrains Mono', monospace; }
+        canvas { transform: scaleX(-1); }
+        
+        .scan-line {
+            position: absolute; top: 0; left: 0; width: 100%; height: 4px;
+            background: #0ea5e9; box-shadow: 0 0 15px #0ea5e9;
+            animation: scan 1.5s linear infinite; opacity: 0.5; pointer-events: none;
+            display: none;
+        }
+        @keyframes scan {
+            0% { top: 0%; opacity: 0; }
+            100% { top: 100%; opacity: 0; }
+        }
+        .retro-grid {
+            background-image: linear-gradient(rgba(14, 165, 233, 0.05) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(14, 165, 233, 0.05) 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-cyan-400 h-screen flex flex-col overflow-hidden retro-grid selection:bg-cyan-500/30">
+
+    <header class="w-full flex justify-between items-center p-4 border-b border-cyan-900/50 bg-slate-950/80 backdrop-blur z-40">
+        <div>
+            <h1 class="text-xl font-bold tracking-tighter text-white">VISION<span class="text-cyan-500">_LOCAL</span> // TF.JS</h1>
+            <p class="text-[10px] text-cyan-600">ENGINE: COCO-SSD | LATENCY: ZERO | NO API KEY</p>
+        </div>
+        <div id="loading-badge" class="px-3 py-1 bg-yellow-500/20 text-yellow-500 text-xs font-bold border border-yellow-500/50 animate-pulse">
+            LOADING NEURAL NET...
+        </div>
+    </header>
+
+    <main class="flex-1 relative flex items-center justify-center bg-black p-4">
+        <div class="relative w-full max-w-4xl aspect-video bg-slate-900 rounded border border-cyan-900 overflow-hidden shadow-2xl">
+            
+            <div id="scanner" class="scan-line z-20"></div>
+
+            <div id="start-screen" class="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-950/95 hidden">
+                <div class="border border-cyan-500/30 bg-cyan-950/20 p-8 max-w-md text-center">
+                    <h2 class="text-lg font-bold text-white mb-2">SYSTEM READY</h2>
+                    <p class="text-cyan-400/70 text-xs mb-6">Local Neural Network loaded into browser memory.</p>
+                    <button onclick="startCamera()" class="w-full px-6 py-3 font-bold text-black bg-cyan-500 hover:bg-cyan-400 transition-all text-sm">
+                        ACTIVATE CAMERA
+                    </button>
+                </div>
+            </div>
+
+            <video id="webcam" class="hidden" playsinline muted></video>
+            <canvas id="output" class="w-full h-full object-cover"></canvas>
+
+            <div class="absolute top-4 left-4 z-20">
+                <div class="bg-black/80 border border-cyan-500/30 p-2 backdrop-blur-sm">
+                    <div class="text-[10px] text-cyan-500/70 uppercase">FPS</div>
+                    <div id="fps-meter" class="text-xl font-bold text-white leading-none">0</div>
+                </div>
+            </div>
+            
+            <div class="absolute bottom-4 left-4 z-20">
+                <div class="text-[10px] text-cyan-600 bg-black/80 px-2 py-1">
+                    TARGET CLASS: <span class="text-white">CAR, TRUCK</span>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <script>
+        // ---------------------------------------------------------
+        // CONFIG
+        // ---------------------------------------------------------
+        const CONFIDENCE_THRESHOLD = 0.5; // 50% confidence required
+        const TARGET_CLASSES = ['car', 'truck', 'bus']; // Objects to detect
+        const LANE_COLOR = '#0ea5e9';
+        const BOX_COLOR = '#10b981';
+
+        // ---------------------------------------------------------
+        // STATE
+        // ---------------------------------------------------------
+        let model = null;
+        let stream = null;
+        let isRunning = false;
+        let lastFrameTime = 0;
+        let lane = { x: 0, y: 0, w: 0, h: 0 };
+
+        // DOM Elements
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('output');
+        const ctx = canvas.getContext('2d');
+        const startScreen = document.getElementById('start-screen');
+        const loadingBadge = document.getElementById('loading-badge');
+        const scanner = document.getElementById('scanner');
+        const fpsMeter = document.getElementById('fps-meter');
+
+        // ---------------------------------------------------------
+        // 1. LOAD MODEL (Runs on Page Load)
+        // ---------------------------------------------------------
+        (async () => {
+            try {
+                // Load COCO-SSD (Pre-trained object detection)
+                model = await cocoSsd.load();
+                
+                // UI Updates
+                loadingBadge.innerText = "NET ONLINE";
+                loadingBadge.classList.remove('animate-pulse', 'bg-yellow-500/20', 'text-yellow-500', 'border-yellow-500/50');
+                loadingBadge.classList.add('bg-cyan-500/20', 'text-cyan-500', 'border-cyan-500/50');
+                startScreen.classList.remove('hidden');
+            } catch (err) {
+                alert("Failed to load TensorFlow model: " + err);
+            }
+        })();
+
+        // ---------------------------------------------------------
+        // 2. START CAMERA
+        // ---------------------------------------------------------
+        window.startCamera = async () => {
+            try {
+                startScreen.classList.add('hidden');
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    video.play();
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    updateLane();
+                    isRunning = true;
+                    scanner.style.display = 'block';
+                    
+                    // Start the detection loop
+                    detectFrame();
+                };
+            } catch (err) {
+                alert("Camera Error: " + err.message);
+            }
+        };
+
+        function updateLane() {
+            const w = canvas.width * 0.6;
+            const h = canvas.height * 0.6;
+            lane = { x: (canvas.width - w) / 2, y: (canvas.height - h) / 2, w, h };
+        }
+
+        // ---------------------------------------------------------
+        // 3. DETECTION LOOP (Real-time)
+        // ---------------------------------------------------------
+        async function detectFrame() {
+            if (!isRunning) return;
+
+            // Measure FPS
+            const now = performance.now();
+            const fps = Math.round(1000 / (now - lastFrameTime));
+            lastFrameTime = now;
+            fpsMeter.innerText = fps > 200 ? '-' : fps; // Initial spike fix
+
+            // A. Detect Objects
+            // model.detect(video) returns array: [{ bbox: [x, y, width, height], class: "person", score: 0.83 }, ...]
+            const predictions = await model.detect(video);
+
+            // B. Filter for Cars/Trucks
+            const validPredictions = predictions.filter(p => 
+                TARGET_CLASSES.includes(p.class) && p.score > CONFIDENCE_THRESHOLD
+            );
+
+            // C. Draw Everything
+            draw(validPredictions);
+
+            // Loop
+            requestAnimationFrame(detectFrame);
+        }
+
+        // ---------------------------------------------------------
+        // 4. DRAWING
+        // ---------------------------------------------------------
+        function draw(predictions) {
+            // Clear & Draw Video
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Draw Lane
+            ctx.strokeStyle = LANE_COLOR;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 10]);
+            ctx.strokeRect(lane.x, lane.y, lane.w, lane.h);
+            ctx.setLineDash([]);
+            
+            // Draw Predictions
+            predictions.forEach(prediction => {
+                const [x, y, width, height] = prediction.bbox;
+                const isCar = TARGET_CLASSES.includes(prediction.class);
+
+                // Draw Bounding Box
+                ctx.strokeStyle = BOX_COLOR;
+                ctx.lineWidth = 4;
+                ctx.strokeRect(x, y, width, height);
+
+                // Draw Label Background
+                ctx.fillStyle = BOX_COLOR;
+                const textWidth = ctx.measureText(prediction.class).width;
+                ctx.fillRect(x, y - 25, textWidth + 20, 25);
+
+                // Draw Text (We need to flip logic if we were mirroring text, 
+                // but since we are not flipping context here for text specific drawing, standard works)
+                // Note: The canvas has scaleX(-1) in CSS, but the Context is standard. 
+                // To make text readable on a mirrored CSS canvas, we usually need to flip the text context.
+                // However, TF.js coordinates match the video source (unmirrored).
+                // Let's stick to simple drawing.
+                
+                ctx.save();
+                ctx.translate(x + width, y); // Move to right side (which is left visually)
+                ctx.scale(-1, 1); // Flip text
+                
+                // Actually, standard approach for CSS mirrored canvas:
+                // We draw the text normally, but since the whole canvas is flipped by CSS,
+                // the text appears backwards. We need to draw the text backwards effectively.
+                // Simpler hack: Don't flip the canvas via CSS for the AI output, flip the video only?
+                // No, let's just do the context flip trick:
+                
+                ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to draw text correctly on screen? 
+                // Wait, if canvas is CSS flipped, we can't unflip just the text easily without complex calc.
+                // EASIEST FIX: Remove CSS flip from canvas, and flip the image drawing instead.
+                
+                // REVERTED: I will handle the flip in the drawImage step for cleaner code.
+            });
+            
+            // Re-Draw text properly (See note below)
+        }
+
+        // FIX: Override the draw function to handle the mirroring cleanly
+        // We will flip the context horizontally before drawing the video, 
+        // so the video looks like a mirror, but the text we draw after remains normal.
+        const originalDraw = draw;
+        draw = (predictions) => {
+            // 1. Draw Video Mirrored
+            ctx.save();
+            ctx.scale(-1, 1);
+            ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // 2. Draw Lane (Mirrored coords adjustment not needed if centered, but let's keep it simple)
+            ctx.strokeStyle = LANE_COLOR;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 10]);
+            ctx.strokeRect(lane.x, lane.y, lane.w, lane.h);
+            ctx.setLineDash([]);
+
+            // 3. Draw Predictions
+            predictions.forEach(prediction => {
+                // prediction.bbox is based on the original video (unmirrored).
+                // [x, y, w, h]. 
+                // If we draw on top of a mirrored video, we need to mirror the X coordinate.
+                let [x, y, width, height] = prediction.bbox;
+                
+                // Mirror X
+                x = canvas.width - x - width;
+
+                // Box
+                ctx.strokeStyle = BOX_COLOR;
+                ctx.lineWidth = 4;
+                ctx.strokeRect(x, y, width, height);
+
+                // Label
+                ctx.fillStyle = BOX_COLOR;
+                ctx.font = "bold 16px JetBrains Mono";
+                ctx.fillText(prediction.class.toUpperCase() + ` ${Math.round(prediction.score*100)}%`, x, y - 10);
+            });
+        }
+        
+        // Handle Resize
+        window.addEventListener('resize', () => {
+           if(video.readyState === 4) { canvas.width = video.videoWidth; canvas.height = video.videoHeight; updateLane(); }
+        });
+    </script>
+</body>
 </html>
